@@ -1,86 +1,108 @@
-import os
-import sys
-import time
+import pandas as pd
 import numpy as np
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
-from tensorflow.keras.utils import to_categorical
-from tensorflow.keras.callbacks import EarlyStopping
-from tensorflow.keras.optimizers import Adam
-from src.exception import CustomException
-from src.utils import save_object, load_object
-from dataclasses import dataclass
+from sklearn.preprocessing import MinMaxScaler
+from keras.models import Sequential
+from keras.layers import Dense, LSTM
 import pickle
+import os
 
-@dataclass
-class ModelTrainerConfig:
-    trained_model_file_path = os.path.join("artifacts", "best_model.h5")
-    preprocessor_file_path = os.path.join("artifacts", "preprocessor.pkl")
-    train_data_file_path = os.path.join("artifacts", "processed_train.npy")
-    test_data_file_path = os.path.join("artifacts", "processed_test.npy")
-    class_names_file_path = os.path.join("artifacts", "class_names.pkl")
+# Load and preprocess data
+def load_and_preprocess_data(file_path):
+    df = pd.read_csv(file_path)
+    df['Date'] = pd.to_datetime(df['Date'], format="%Y-%m-%d")
+    df.set_index('Date', inplace=True)
+    data = df.filter(['Close'])
+    return data.values, df
 
-class ModelTrainer:
-    def __init__(self):
-        self.model_trainer_config = ModelTrainerConfig()
+# Create training and testing datasets
+def create_train_test_data(dataset, scaler):
+    training_data_len = int(np.ceil(len(dataset) * .95))
+    scaled_data = scaler.fit_transform(dataset)
+    train_data = scaled_data[0:int(training_data_len), :]
 
-    def initiate_model_trainer(self, preprocessor=None):
-        try:
-            # Load preprocessed data
-            train_array = np.load(self.model_trainer_config.train_data_file_path)
-            test_array = np.load(self.model_trainer_config.test_data_file_path)
+    x_train, y_train = [], []
+    for i in range(60, len(train_data)):
+        x_train.append(train_data[i-60:i, 0])
+        y_train.append(train_data[i, 0])
 
-            X_train, y_train = train_array[:, :-1], train_array[:, -1]
-            X_test, y_test = test_array[:, :-1], test_array[:, -1]
+    x_train, y_train = np.array(x_train), np.array(y_train)
+    x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
 
-            # Load class names
-            class_names = load_object(self.model_trainer_config.class_names_file_path)
-            num_classes = len(class_names)
+    test_data = scaled_data[training_data_len - 60:, :]
+    x_test, y_test = [], dataset[training_data_len:, :]
 
-            # One-hot encode target variables
-            y_train = to_categorical(y_train, num_classes=num_classes)
-            y_test = to_categorical(y_test, num_classes=num_classes)
+    for i in range(60, len(test_data)):
+        x_test.append(test_data[i-60:i, 0])
 
-            # Reshape input for LSTM (samples, timesteps, features)
-            X_train = X_train.reshape((X_train.shape[0], 1, X_train.shape[1]))
-            X_test = X_test.reshape((X_test.shape[0], 1, X_test.shape[1]))
+    x_test = np.array(x_test)
+    x_test = np.reshape(x_test, (x_test.shape[0], x_test.shape[1], 1))
 
-            # Build LSTM model
-            model = Sequential([
-                LSTM(64, activation='tanh', return_sequences=False, input_shape=(X_train.shape[1], X_train.shape[2])),
-                Dense(32, activation='relu'),
-                Dense(num_classes, activation='softmax')
-            ])
+    return x_train, y_train, x_test, y_test, scaler
 
-            # Compile model
-            model.compile(optimizer=Adam(learning_rate=0.001),
-                          loss='categorical_crossentropy',
-                          metrics=['accuracy'])
+# Build and train the LSTM model (same as original)
+def build_and_train_model(x_train, y_train):
+    model = Sequential()
+    model.add(LSTM(128, return_sequences=True, input_shape=(x_train.shape[1], 1)))
+    model.add(LSTM(64, return_sequences=False))
+    model.add(Dense(25))
+    model.add(Dense(1))
+    model.compile(optimizer='adam', loss='mean_squared_error')
+    model.fit(x_train, y_train, batch_size=1, epochs=3)
+    return model
 
-            # Train model
-            early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+# Evaluate the model
+def evaluate_model(model, x_test, y_test, scaler):
+    predictions = scaler.inverse_transform(model.predict(x_test))
+    return np.sqrt(np.mean(((predictions - y_test) ** 2)))
 
-            start_time = time.time()
-            model.fit(X_train, y_train, 
-                      validation_data=(X_test, y_test), 
-                      epochs=50, 
-                      batch_size=32, 
-                      callbacks=[early_stopping],
-                      verbose=2)
-            end_time = time.time()
+# Load the best model and scaler
+def load_best_model(model_filename, scaler_filename):
+    with open(model_filename, 'rb') as file:
+        model = pickle.load(file)
+    with open(scaler_filename, 'rb') as file:
+        scaler = pickle.load(file)
+    return model, scaler
 
-            print(f"Training completed in {end_time - start_time:.2f} seconds.")
+# Main function
+def main():
+    file_path = 'dataset_daily.csv'
+    best_model_filename = 'best_lstm_stock_model_daily.pkl'
+    best_scaler_filename = 'best_scaler_daily.pkl'
 
-            # Save the trained model
-            model.save(self.model_trainer_config.trained_model_file_path)
-            print("Best model saved successfully.")
+    # Load and preprocess data
+    dataset, _ = load_and_preprocess_data(file_path)
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    x_train, y_train, x_test, y_test, scaler = create_train_test_data(dataset, scaler)
 
-            return model
+    # Train new model (same as original)
+    print("Training new model...")
+    new_model = build_and_train_model(x_train, y_train)
+    new_rmse = evaluate_model(new_model, x_test, y_test, scaler)
+    print(f"New Model RMSE: {new_rmse}")
 
-        except Exception as e:
-            print(f"Error occurred: {e}")
-            raise CustomException(e, sys)
+    # Load best model
+    if os.path.exists(best_model_filename) and os.path.exists(best_scaler_filename):
+        print("Loading best model...")
+        best_model, best_scaler = load_best_model(best_model_filename, best_scaler_filename)
+        best_rmse = evaluate_model(best_model, x_test, y_test, best_scaler)
+        print(f"Best Model RMSE: {best_rmse}")
+
+        # Compare models
+        if new_rmse < best_rmse:
+            print("New model is better. Saving new model as the best model.")
+            best_model, best_scaler = new_model, scaler
+    else:
+        print("No existing best model. Saving new model as the best model.")
+        best_model, best_scaler = new_model, scaler
+
+    # Save the best model and scaler
+    with open(best_model_filename, 'wb') as file:
+        pickle.dump(best_model, file)
+    with open(best_scaler_filename, 'wb') as file:
+        pickle.dump(best_scaler, file)
+
+    print(f"Best model saved as {best_model_filename}")
+    print(f"Best scaler saved as {best_scaler_filename}")
 
 if __name__ == "__main__":
-    model_trainer = ModelTrainer()
-    model_trainer.initiate_model_trainer()
+    main()
