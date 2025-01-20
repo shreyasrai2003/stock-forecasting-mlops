@@ -3,8 +3,9 @@ import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 from keras.models import Sequential
 from keras.layers import Dense, LSTM
-import pickle
 import os
+from keras.models import load_model
+import joblib  # Use joblib for saving/loading the scaler
 
 # Load and preprocess data
 def load_and_preprocess_data(file_path):
@@ -39,7 +40,7 @@ def create_train_test_data(dataset, scaler):
 
     return x_train, y_train, x_test, y_test, scaler
 
-# Build and train the LSTM model (same as original)
+# Build and train the LSTM model
 def build_and_train_model(x_train, y_train):
     model = Sequential()
     model.add(LSTM(128, return_sequences=True, input_shape=(x_train.shape[1], 1)))
@@ -57,24 +58,22 @@ def evaluate_model(model, x_test, y_test, scaler):
 
 # Load the best model and scaler
 def load_best_model(model_filename, scaler_filename):
-    with open(model_filename, 'rb') as file:
-        model = pickle.load(file)
-    with open(scaler_filename, 'rb') as file:
-        scaler = pickle.load(file)
+    model = load_model(model_filename)  # Load the model using Keras
+    scaler = joblib.load(scaler_filename)  # Load the scaler using joblib
     return model, scaler
 
 # Main function
 def main():
     file_path = 'dataset_daily.csv'
-    best_model_filename = 'best_lstm_stock_model_daily.pkl'
-    best_scaler_filename = 'best_scaler_daily.pkl'
+    best_model_filename = 'best_lstm_stock_model_daily.h5'  # Save as .h5 file
+    best_scaler_filename = 'best_scaler_daily.joblib'  # Save as .joblib file
 
     # Load and preprocess data
     dataset, _ = load_and_preprocess_data(file_path)
     scaler = MinMaxScaler(feature_range=(0, 1))
     x_train, y_train, x_test, y_test, scaler = create_train_test_data(dataset, scaler)
 
-    # Train new model (same as original)
+    # Train new model
     print("Training new model...")
     new_model = build_and_train_model(x_train, y_train)
     new_rmse = evaluate_model(new_model, x_test, y_test, scaler)
@@ -96,10 +95,8 @@ def main():
         best_model, best_scaler = new_model, scaler
 
     # Save the best model and scaler
-    with open(best_model_filename, 'wb') as file:
-        pickle.dump(best_model, file)
-    with open(best_scaler_filename, 'wb') as file:
-        pickle.dump(best_scaler, file)
+    best_model.save(best_model_filename)  # Save the model as .h5 file
+    joblib.dump(scaler, best_scaler_filename)  # Save the scaler as .joblib file
 
     print(f"Best model saved as {best_model_filename}")
     print(f"Best scaler saved as {best_scaler_filename}")
